@@ -135,7 +135,7 @@ export default function App() {
         parts.push({ inline_data: { mime_type: img.type, data: img.base64 } });
       });
       parts.push({ text: txt || "請辨識圖片中的訂單資訊" });
-      var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + key;
+      var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + key;
       return fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
