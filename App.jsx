@@ -121,34 +121,72 @@ export default function App() {
   }
   function removeImage(idx) { setOrderImages(function (p) { return p.filter(function (_, i) { return i !== idx; }); }); }
 
-  function parseOrder() {
-    var txt = orderText.trim();
-    if (!txt && orderImages.length === 0) return;
-    setOrderLoading(true); setOrderError(null); setOrderResult(null);
+ async function parseOrder() {
+    var txt = orderText.trim();
+    // 1. 檢查輸入
+    if (!txt && orderImages.length === 0) {
+      alert("請輸入文字或上傳圖片");
+      return;
+    }
+    // 2. 檢查 API Key (移除 Claude 後，現在 Key 是必須的)
+    if (!geminiKey) {
+      setOrderError("❌ 請先輸入 Google Gemini API Key");
+      return;
+    }
 
-    var key = geminiKey;
-    var imgs = orderImages.slice();
+    setOrderLoading(true); setOrderError(null); setOrderResult(null);
 
-    var tryGemini = function () {
-      var parts = [];
-      imgs.forEach(function (img) {
-        parts.push({ inline_data: { mime_type: img.type, data: img.base64 } });
-      });
-      parts.push({ text: txt || "請辨識圖片中的訂單資訊" });
-      var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + key;
-      return fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: ORDER_SYSTEM }] },
-          contents: [{ parts: parts }],
-          generationConfig: { temperature: 0.1, responseMimeType: "application/json" },
-        }),
-      }).then(function (r) { return r.json(); }).then(function (data) {
-        var raw = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts || []).map(function (p) { return p.text || ""; }).join("");
-        return JSON.parse(raw.replace(/```json|```/g, "").trim());
-      });
-    };
+    try {
+      // 3. 準備資料
+      var parts = [];
+      orderImages.forEach(function (img) {
+        parts.push({ inline_data: { mime_type: img.type, data: img.base64 } });
+      });
+      // 將系統指令與使用者輸入合併傳送，相容性最高
+      parts.push({ text: ORDER_SYSTEM + "\n\n使用者輸入內容：\n" + (txt || "請辨識圖片中的訂單") });
+
+      // 4. 設定網址 (強制使用 gemini-1.5-flash)
+      var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + geminiKey;
+
+      // 5. 發送請求
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: parts }],
+          generationConfig: { temperature: 0.1 },
+        }),
+      });
+
+      // 6. 錯誤處理
+      if (!response.ok) {
+         const errData = await response.json().catch(() => ({}));
+         throw new Error("API 請求失敗 (" + response.status + "): " + (errData.error?.message || "請檢查 Key"));
+      }
+
+      // 7. 解析結果
+      const data = await response.json();
+      const candidate = data.candidates && data.candidates[0];
+      if (!candidate) throw new Error("AI 沒有回傳結果");
+
+      var raw = candidate.content && candidate.content.parts && candidate.content.parts[0] ? candidate.content.parts[0].text : "";
+      // 清理 Markdown
+      var cleanJson = raw.replace(/```json|```/g, "").trim();
+      var parsed = JSON.parse(cleanJson);
+      
+      setOrderResult(Array.isArray(parsed) ? parsed : [parsed]);
+
+    } catch (err) {
+      console.error(err);
+      if (err.message && err.message.includes("Failed to fetch")) {
+        setOrderError("❌ 連線失敗：請檢查網路，或關閉廣告阻擋器 (AdBlock)");
+      } else {
+        setOrderError("❌ 辨識失敗：" + err.message);
+      }
+    } finally {
+      setOrderLoading(false);
+    }
+  }
 
     var tryClaude = function () {
       var content = [];
