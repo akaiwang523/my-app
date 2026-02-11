@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect } from "react";
+import { db } from "./firebase"; // 請確保你有建立 firebase.js 檔案
+import { doc, setDoc, onSnapshot } from "firebase/firestore";
 
 const WEEKDAYS = ["日","一","二","三","四","五","六"];
 const TODAY = new Date().toISOString().slice(0,10);
@@ -87,35 +89,56 @@ export default function App() {
   var _loaded = useState(false), dataLoaded = _loaded[0], setDataLoaded = _loaded[1];
   var fileRef = useRef(null);
 
-  // ===== 持久化：載入 =====
-  useEffect(function () {
+  // ===== 輔助函式：寫入 Firebase =====
+  const saveToFirebase = async (data) => {
     try {
-      var saved = localStorage.getItem("cleanapp-data");
-      if (saved) {
-        var data = JSON.parse(saved);
+      // 使用 setDoc 配合 merge: true，只更新有變動的欄位
+      await setDoc(doc(db, "app-data", "main"), data, { merge: true });
+    } catch (e) {
+      console.error("寫入 Firebase 失敗:", e);
+    }
+  };
+
+  // ===== Step 1: 讀取同步 (取代原本的 localStorage getItem) =====
+  useEffect(function () {
+    // 監聽 app-data/main 文件
+    const unsub = onSnapshot(doc(db, "app-data", "main"), (docSnapshot) => {
+      if (docSnapshot.exists()) {
+        const data = docSnapshot.data();
+        // 如果雲端有資料，就更新本地狀態
         if (data.tasks) setTasks(data.tasks);
         if (data.staff) setStaff(data.staff);
         if (data.apiKey) setApiKey(data.apiKey);
+      } else {
+        // 如果是全新的資料庫（空的），把預設值寫上去
+        saveToFirebase({ tasks: initTasks, staff: initStaff });
       }
-    } catch (e) {
-      // 首次使用，沒有已存資料，使用預設值
-    }
-    setDataLoaded(true);
+      setDataLoaded(true);
+    }, (error) => {
+      console.error("監聽失敗:", error);
+      // 即使連線失敗，也標記載入完成，以免畫面卡住
+      setDataLoaded(true);
+    });
+
+    return () => unsub(); // 元件卸載時取消監聽
   }, []);
 
-  // ===== 持久化：儲存 =====
+  // ===== Step 2: 自動儲存 (取代原本的 localStorage setItem) =====
   useEffect(function () {
-    if (!dataLoaded) return; // 等資料載入完才開始儲存，避免覆蓋
-    try {
-      localStorage.setItem("cleanapp-data", JSON.stringify({
+    if (!dataLoaded) return; // 剛載入時不執行，避免把雲端資料蓋掉
+
+    // 設定 1 秒延遲，避免打字或頻繁操作時一直寫入資料庫
+    const timer = setTimeout(() => {
+      saveToFirebase({
         tasks: tasks,
         staff: staff,
-        apiKey: apiKey,
-      }));
-    } catch (e) {
-      // storage 不可用時靜默失敗
-    }
+        apiKey: apiKey
+      });
+    }, 1000);
+
+    return () => clearTimeout(timer);
   }, [tasks, staff, apiKey, dataLoaded]);
+
 
   var todayTasks = tasks.filter(function (t) { return t.date === TODAY; })
     .sort(function (a, b) { var o = { unassigned: 0, assigned: 1, confirmed: 2 }; return (o[a.status] - o[b.status]) || a.checkIn.localeCompare(b.checkIn); });
@@ -226,8 +249,8 @@ export default function App() {
       });
 
       if (!response.ok) {
-         const errData = await response.json().catch(() => ({}));
-         throw new Error("API 請求失敗 (" + response.status + "): " + (errData.error?.message || "請檢查 Key"));
+          const errData = await response.json().catch(() => ({}));
+          throw new Error("API 請求失敗 (" + response.status + "): " + (errData.error?.message || "請檢查 Key"));
       }
 
       const data = await response.json();
@@ -387,7 +410,7 @@ export default function App() {
       <div style={{ fontFamily: "'Noto Sans TC','Helvetica Neue',sans-serif", background: "#FAF6F1", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#888" }}>
         <div style={{ textAlign: "center" }}>
           <div style={{ fontSize: 32, marginBottom: 12 }}>🏠</div>
-          <div style={{ fontSize: 15, fontWeight: 600 }}>載入中...</div>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>資料庫連線中...</div>
         </div>
       </div>
     );
@@ -498,33 +521,27 @@ export default function App() {
                         {hasUn && <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#c0392b" }} />}
                       </div>
                       {dt.slice(0, 3).map(function (t) {
-  var s = STATUS[t.status];
-  // 找出負責人 p
-  var p = t.assignee ? staff.find(function (x) { return x.id === t.assignee; }) : null;
-  
-  return (
-    <div key={t.id} style={{
-      // 如果有負責人，背景色改為負責人的淡色 (p.color + "22")，否則維持狀態色
-      background: p ? p.color + "22" : s.bg, 
-      // 邊框維持負責人顏色
-      borderLeft: "3px solid " + (p ? p.color : s.color),
-      borderRadius: 3,
-      padding: "1px 4px",
-      marginTop: 2,
-      fontSize: 9,
-      overflow: "hidden",
-      whiteSpace: "nowrap",
-      textOverflow: "ellipsis",
-      // 如果已完成，文字變淡
-      opacity: t.status === "confirmed" ? 0.6 : 1 
-    }}>
-      {/* 這裡加入 Emoji 顯示 */}
-      {p ? <span style={{ marginRight: 3 }}>{p.emoji}</span> : null}
-      {t.room}
-      {t.status === "confirmed" ? " ✅" : ""}
-    </div>
-  );
-})}
+                        var s = STATUS[t.status];
+                        var p = t.assignee ? staff.find(function (x) { return x.id === t.assignee; }) : null;
+                        return (
+                          <div key={t.id} style={{
+                            background: p ? p.color + "22" : s.bg,
+                            borderLeft: "3px solid " + (p ? p.color : s.color),
+                            borderRadius: 3,
+                            padding: "1px 4px",
+                            marginTop: 2,
+                            fontSize: 9,
+                            overflow: "hidden",
+                            whiteSpace: "nowrap",
+                            textOverflow: "ellipsis",
+                            opacity: t.status === "confirmed" ? 0.6 : 1
+                          }}>
+                            {p ? <span style={{ marginRight: 3 }}>{p.emoji}</span> : null}
+                            {t.room}
+                            {t.status === "confirmed" ? " ✅" : ""}
+                          </div>
+                        );
+                      })}
                       {dt.length > 3 && <div style={{ fontSize: 9, color: "#999", marginTop: 1, textAlign: "center" }}>{"+" + (dt.length - 3)}</div>}
                     </div>
                   );
