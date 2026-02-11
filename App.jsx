@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 
 const WEEKDAYS = ["日","一","二","三","四","五","六"];
 const TODAY = new Date().toISOString().slice(0,10);
@@ -53,7 +53,7 @@ var ORDER_SYSTEM = `你是一個 Airbnb/民宿訂單辨識助手。
   }
 ]`;
 
-var DEFAULT_GEMINI_KEY = "";
+var DEFAULT_API_KEY = "";
 
 var inputSt = { width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid #ddd", fontSize: 14, fontFamily: "inherit", boxSizing: "border-box" };
 
@@ -69,7 +69,7 @@ export default function App() {
   var _es = useState(null), editingStaff = _es[0], setEditingStaff = _es[1];
   var _ot = useState(""), orderText = _ot[0], setOrderText = _ot[1];
   var _oi = useState([]), orderImages = _oi[0], setOrderImages = _oi[1];
-  var _gk = useState(DEFAULT_GEMINI_KEY), geminiKey = _gk[0], setGeminiKey = _gk[1];
+  var _gk = useState(DEFAULT_API_KEY), apiKey = _gk[0], setApiKey = _gk[1];
   var _ss = useState(false), showSettings = _ss[0], setShowSettings = _ss[1];
   var _or = useState(null), orderResult = _or[0], setOrderResult = _or[1];
   var _ol = useState(false), orderLoading = _ol[0], setOrderLoading = _ol[1];
@@ -77,7 +77,40 @@ export default function App() {
   var _cm = useState(function () { var d = new Date(); return { y: d.getFullYear(), m: d.getMonth() }; }), calMonth = _cm[0], setCalMonth = _cm[1];
   var _cs = useState(null), calSel = _cs[0], setCalSel = _cs[1];
   var _f = useState("all"), filter = _f[0], setFilter = _f[1];
+  var _loaded = useState(false), dataLoaded = _loaded[0], setDataLoaded = _loaded[1];
   var fileRef = useRef(null);
+
+  // ===== 持久化：載入 =====
+  useEffect(function () {
+    (async function () {
+      try {
+        var saved = await window.storage.get("cleanapp-data");
+        if (saved) {
+          var data = JSON.parse(saved.value);
+          if (data.tasks) setTasks(data.tasks);
+          if (data.staff) setStaff(data.staff);
+          if (data.apiKey) setApiKey(data.apiKey);
+        }
+      } catch (e) {
+        // 首次使用，沒有已存資料，使用預設值
+      }
+      setDataLoaded(true);
+    })();
+  }, []);
+
+  // ===== 持久化：儲存 =====
+  useEffect(function () {
+    if (!dataLoaded) return; // 等資料載入完才開始儲存，避免覆蓋
+    try {
+      window.storage.set("cleanapp-data", JSON.stringify({
+        tasks: tasks,
+        staff: staff,
+        apiKey: apiKey,
+      }));
+    } catch (e) {
+      // storage 不可用時靜默失敗
+    }
+  }, [tasks, staff, apiKey, dataLoaded]);
 
   var todayTasks = tasks.filter(function (t) { return t.date === TODAY; })
     .sort(function (a, b) { var o = { unassigned: 0, assigned: 1, confirmed: 2 }; return (o[a.status] - o[b.status]) || a.checkIn.localeCompare(b.checkIn); });
@@ -151,29 +184,39 @@ export default function App() {
       alert("請輸入文字或上傳圖片");
       return;
     }
-    if (!geminiKey) {
-      setOrderError("❌ 請先輸入 Google Gemini API Key");
+    if (!apiKey) {
+      setOrderError("❌ 請先輸入 VectorEngine API Key");
       return;
     }
 
     setOrderLoading(true); setOrderError(null); setOrderResult(null);
 
     try {
-      var parts = [];
+      // 組裝 OpenAI 格式的 content 陣列
+      var contentParts = [];
       orderImages.forEach(function (img) {
-        parts.push({ inline_data: { mime_type: img.type, data: img.base64 } });
+        contentParts.push({
+          type: "image_url",
+          image_url: { url: "data:" + img.type + ";base64," + img.base64 }
+        });
       });
-      parts.push({ text: ORDER_SYSTEM + "\n\n使用者輸入內容：\n" + (txt || "請辨識圖片中的訂單") });
+      contentParts.push({
+        type: "text",
+        text: ORDER_SYSTEM + "\n\n使用者輸入內容：\n" + (txt || "請辨識圖片中的訂單")
+      });
 
-      // 使用 gemini-1.5-flash
-      var url = "https://api.vectorengine.ai" + geminiKey;
+      var url = "https://api.vectorengine.ai/v1/chat/completions";
 
       const response = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + apiKey,
+        },
         body: JSON.stringify({
-          contents: [{ parts: parts }],
-          generationConfig: { temperature: 0.1 },
+          model: "gpt-4o",
+          messages: [{ role: "user", content: contentParts }],
+          temperature: 0.1,
         }),
       });
 
@@ -183,10 +226,10 @@ export default function App() {
       }
 
       const data = await response.json();
-      const candidate = data.candidates && data.candidates[0];
-      if (!candidate) throw new Error("AI 沒有回傳結果");
+      const choice = data.choices && data.choices[0];
+      if (!choice) throw new Error("AI 沒有回傳結果");
 
-      var raw = candidate.content && candidate.content.parts && candidate.content.parts[0] ? candidate.content.parts[0].text : "";
+      var raw = choice.message ? choice.message.content : "";
       var cleanJson = raw.replace(/```json|```/g, "").trim();
       var parsed = JSON.parse(cleanJson);
       
@@ -266,7 +309,19 @@ export default function App() {
   }
 
   var needsCleanCount = orderResult ? orderResult.filter(function (r) { return r.needsClean; }).length : 0;
-  var canParse = orderLoading || (!orderText.trim() && orderImages.length === 0) || !geminiKey.trim();
+  var canParse = orderLoading || (!orderText.trim() && orderImages.length === 0) || !apiKey.trim();
+
+  // 載入中顯示
+  if (!dataLoaded) {
+    return (
+      <div style={{ fontFamily: "'Noto Sans TC','Helvetica Neue',sans-serif", background: "#FAF6F1", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#888" }}>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontSize: 32, marginBottom: 12 }}>🏠</div>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>載入中...</div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ fontFamily: "'Noto Sans TC','Helvetica Neue',sans-serif", background: "#FAF6F1", minHeight: "100vh", color: "#2C2C2C" }}>
@@ -288,18 +343,18 @@ export default function App() {
             <div style={{ background: "rgba(0,0,0,.15)", borderRadius: 12, padding: "14px 16px", marginTop: 12 }}>
               <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, color: "rgba(255,255,255,.9)" }}>{"🔑 API 設定"}</div>
               <div style={{ marginBottom: 8 }}>
-                <label style={{ fontSize: 12, color: "rgba(255,255,255,.7)", display: "block", marginBottom: 4 }}>{"Google Gemini API Key"}</label>
+                <label style={{ fontSize: 12, color: "rgba(255,255,255,.7)", display: "block", marginBottom: 4 }}>{"VectorEngine API Key"}</label>
                 <div style={{ display: "flex", gap: 8 }}>
-                  <input value={geminiKey} onChange={function (e) { setGeminiKey(e.target.value); }} placeholder="輸入你的 Gemini API Key"
+                  <input value={apiKey} onChange={function (e) { setApiKey(e.target.value); }} placeholder="輸入你的 VectorEngine API Key"
                     style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "none", fontSize: 13, fontFamily: "inherit", background: "rgba(255,255,255,.9)" }} />
-                  {geminiKey !== DEFAULT_GEMINI_KEY && (
-                    <button onClick={function () { setGeminiKey(DEFAULT_GEMINI_KEY); }} style={{ background: "rgba(255,255,255,.2)", border: "none", borderRadius: 8, padding: "8px 12px", color: "#fff", cursor: "pointer", fontSize: 12, fontFamily: "inherit" }}>{"重置"}</button>
+                  {apiKey !== DEFAULT_API_KEY && (
+                    <button onClick={function () { setApiKey(DEFAULT_API_KEY); }} style={{ background: "rgba(255,255,255,.2)", border: "none", borderRadius: 8, padding: "8px 12px", color: "#fff", cursor: "pointer", fontSize: 12, fontFamily: "inherit" }}>{"重置"}</button>
                   )}
                 </div>
-                <div style={{ fontSize: 11, color: "rgba(255,255,255,.5)", marginTop: 6 }}>{"到 aistudio.google.com 取得免費 API Key"}</div>
+                <div style={{ fontSize: 11, color: "rgba(255,255,255,.5)", marginTop: 6 }}>{"到 vectorengine.ai 取得 API Key"}</div>
               </div>
               <div style={{ fontSize: 11, color: "rgba(255,255,255,.4)" }}>
-                {geminiKey ? "✅ 已設定 Gemini Key" : "⚠️ 請輸入 Key 以啟用 AI 辨識"}
+                {apiKey ? "✅ 已設定 VectorEngine Key（自動儲存）" : "⚠️ 請輸入 Key 以啟用 AI 辨識"}
               </div>
             </div>
           )}
@@ -526,11 +581,11 @@ export default function App() {
 
             <div style={{ background: "#f4f1ec", borderRadius: 10, padding: "12px 14px", marginBottom: 14 }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: "#555", marginBottom: 8 }}>{"🔑 AI 辨識 API Key"}</div>
-              <input value={geminiKey} onChange={function (e) { setGeminiKey(e.target.value); }} placeholder="輸入 Google Gemini API Key"
+              <input value={apiKey} onChange={function (e) { setApiKey(e.target.value); }} placeholder="輸入 VectorEngine API Key"
                 style={{ width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid #ddd", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", background: "#fff" }} />
               <div style={{ fontSize: 11, color: "#999", marginTop: 6, lineHeight: 1.5 }}>
-                {geminiKey ? "✅ 已設定" : "⚠️ 請先輸入 API Key 才能使用 AI 辨識"}
-                {" — 到 aistudio.google.com 免費取得"}
+                {apiKey ? "✅ 已設定（自動儲存）" : "⚠️ 請先輸入 API Key 才能使用 AI 辨識"}
+                {" — 到 vectorengine.ai 取得"}
               </div>
             </div>
 
