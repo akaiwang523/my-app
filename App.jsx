@@ -82,27 +82,25 @@ export default function App() {
 
   // ===== 持久化：載入 =====
   useEffect(function () {
-    (async function () {
-      try {
-        var saved = await window.storage.get("cleanapp-data");
-        if (saved) {
-          var data = JSON.parse(saved.value);
-          if (data.tasks) setTasks(data.tasks);
-          if (data.staff) setStaff(data.staff);
-          if (data.apiKey) setApiKey(data.apiKey);
-        }
-      } catch (e) {
-        // 首次使用，沒有已存資料，使用預設值
+    try {
+      var saved = localStorage.getItem("cleanapp-data");
+      if (saved) {
+        var data = JSON.parse(saved);
+        if (data.tasks) setTasks(data.tasks);
+        if (data.staff) setStaff(data.staff);
+        if (data.apiKey) setApiKey(data.apiKey);
       }
-      setDataLoaded(true);
-    })();
+    } catch (e) {
+      // 首次使用，沒有已存資料，使用預設值
+    }
+    setDataLoaded(true);
   }, []);
 
   // ===== 持久化：儲存 =====
   useEffect(function () {
     if (!dataLoaded) return; // 等資料載入完才開始儲存，避免覆蓋
     try {
-      window.storage.set("cleanapp-data", JSON.stringify({
+      localStorage.setItem("cleanapp-data", JSON.stringify({
         tasks: tasks,
         staff: staff,
         apiKey: apiKey,
