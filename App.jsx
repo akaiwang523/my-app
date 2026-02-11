@@ -498,9 +498,33 @@ export default function App() {
                         {hasUn && <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#c0392b" }} />}
                       </div>
                       {dt.slice(0, 3).map(function (t) {
-                        var s = STATUS[t.status], p = t.assignee ? staff.find(function (x) { return x.id === t.assignee; }) : null;
-                        return <div key={t.id} style={{ background: s.bg, borderLeft: "3px solid " + (p ? p.color : s.color), borderRadius: 3, padding: "1px 4px", marginTop: 2, fontSize: 9, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{t.room + (t.status === "confirmed" ? " ✅" : "")}</div>;
-                      })}
+  var s = STATUS[t.status];
+  // 找出負責人 p
+  var p = t.assignee ? staff.find(function (x) { return x.id === t.assignee; }) : null;
+  
+  return (
+    <div key={t.id} style={{
+      // 如果有負責人，背景色改為負責人的淡色 (p.color + "22")，否則維持狀態色
+      background: p ? p.color + "22" : s.bg, 
+      // 邊框維持負責人顏色
+      borderLeft: "3px solid " + (p ? p.color : s.color),
+      borderRadius: 3,
+      padding: "1px 4px",
+      marginTop: 2,
+      fontSize: 9,
+      overflow: "hidden",
+      whiteSpace: "nowrap",
+      textOverflow: "ellipsis",
+      // 如果已完成，文字變淡
+      opacity: t.status === "confirmed" ? 0.6 : 1 
+    }}>
+      {/* 這裡加入 Emoji 顯示 */}
+      {p ? <span style={{ marginRight: 3 }}>{p.emoji}</span> : null}
+      {t.room}
+      {t.status === "confirmed" ? " ✅" : ""}
+    </div>
+  );
+})}
                       {dt.length > 3 && <div style={{ fontSize: 9, color: "#999", marginTop: 1, textAlign: "center" }}>{"+" + (dt.length - 3)}</div>}
                     </div>
                   );
