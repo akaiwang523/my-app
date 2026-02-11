@@ -29,26 +29,33 @@ function friendly(ds) {
   return (d.getMonth() + 1) + "/" + d.getDate() + "（" + WEEKDAYS[d.getDay()] + "）";
 }
 
+function addDays(dateStr, n) {
+  var d = new Date(dateStr);
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
 var ORDER_SYSTEM = `你是一個 Airbnb/民宿訂單辨識助手。
 任務：辨識圖片或文字中的訂單資訊，並提取為 JSON 格式。
 規則：
-1. 這是房務系統用的，重點是抓出「房號」、「日期」、「人數」。
+1. 這是房務系統用的，重點是抓出「房號」、「入住日期」、「住幾晚」、「人數」。
 2. 如果是單純的文字截圖，請根據語意提取資訊。
 3. 如果無法辨識或不是訂單，請回傳空陣列 []。
 4. 嚴格回傳 JSON 陣列，不要有 Markdown 標記 (如 \`\`\`json)。
+5. checkInDate 是入住日期，nights 是住幾晚（很重要！預設1晚）。
+6. 今天日期是 ${TODAY}，請正確推算日期。
 
 回傳欄位格式範例：
 [
   {
     "checkInDate": "${TODAY}",
-    "nights": 1,
-    "cleanDate": "${TODAY}",
+    "nights": 2,
     "room": "201",
     "checkInTime": "15:00",
     "guests": 2,
     "needsClean": true,
     "notes": "有小孩",
-    "summary": "201房 2位入住",
+    "summary": "201房 2位入住 住2晚",
     "confidence": "high"
   }
 ]`;
@@ -231,7 +238,42 @@ export default function App() {
       var cleanJson = raw.replace(/```json|```/g, "").trim();
       var parsed = JSON.parse(cleanJson);
       
-      setOrderResult(Array.isArray(parsed) ? parsed : [parsed]);
+      var results = Array.isArray(parsed) ? parsed : [parsed];
+      
+      // 展開多日住宿為每日清潔任務草稿
+      var drafts = [];
+      results.forEach(function (r) {
+        if (!r.needsClean) {
+          drafts.push(Object.assign({}, r, { _assignee: null, _cleanDate: r.checkInDate || TODAY }));
+          return;
+        }
+        var nights = r.nights || 1;
+        var checkIn = r.checkInDate || TODAY;
+        for (var i = 0; i < nights; i++) {
+          var cleanDate = addDays(checkIn, i + 1); // 每晚退房/換床日
+          var label = nights > 1
+            ? (i < nights - 1 ? "第" + (i + 1) + "晚・日常整理" : "退房・深度清潔")
+            : "退房清潔";
+          drafts.push({
+            room: r.room,
+            checkInDate: checkIn,
+            checkInTime: r.checkInTime || "15:00",
+            nights: nights,
+            guests: r.guests,
+            needsClean: true,
+            notes: r.notes,
+            summary: r.summary,
+            confidence: r.confidence,
+            _cleanDate: cleanDate,
+            _assignee: null,
+            _label: label,
+            _dayIndex: i + 1,
+            _totalDays: nights,
+          });
+        }
+      });
+      
+      setOrderResult(drafts);
 
     } catch (err) {
       console.error(err);
@@ -245,16 +287,46 @@ export default function App() {
     }
   }
 
+  function updateDraft(idx, field, value) {
+    setOrderResult(function (p) {
+      if (!p) return p;
+      return p.map(function (r, i) {
+        if (i !== idx) return r;
+        var updated = Object.assign({}, r);
+        updated[field] = value;
+        return updated;
+      });
+    });
+  }
+
   function importOrder(r, idx) {
-    var notes = [r.guests ? r.guests + "位房客" : null, r.nights ? "住" + r.nights + "晚" : null, r.notes || null].filter(Boolean).join("・");
-    setTasks(function (p) { return p.concat([{ id: Date.now() + idx, date: r.cleanDate, room: r.room, checkIn: r.checkInTime || "15:00", status: "unassigned", assignee: null, notes: notes }]); });
+    var notes = [r._label, r.guests ? r.guests + "位房客" : null, r.notes || null].filter(Boolean).join("・");
+    var hasAssignee = !!r._assignee;
+    setTasks(function (p) { return p.concat([{
+      id: Date.now() + idx,
+      date: r._cleanDate,
+      room: r.room,
+      checkIn: r.checkInTime || "15:00",
+      status: hasAssignee ? "assigned" : "unassigned",
+      assignee: r._assignee,
+      notes: notes,
+    }]); });
     setOrderResult(function (p) { return p ? p.filter(function (_, i) { return i !== idx; }) : null; });
   }
   function importAllOrders() {
     if (!orderResult) return;
     var nw = orderResult.filter(function (r) { return r.needsClean; }).map(function (r, i) {
-      var notes = [r.guests ? r.guests + "位房客" : null, r.nights ? "住" + r.nights + "晚" : null, r.notes || null].filter(Boolean).join("・");
-      return { id: Date.now() + i, date: r.cleanDate, room: r.room, checkIn: r.checkInTime || "15:00", status: "unassigned", assignee: null, notes: notes };
+      var notes = [r._label, r.guests ? r.guests + "位房客" : null, r.notes || null].filter(Boolean).join("・");
+      var hasAssignee = !!r._assignee;
+      return {
+        id: Date.now() + i,
+        date: r._cleanDate,
+        room: r.room,
+        checkIn: r.checkInTime || "15:00",
+        status: hasAssignee ? "assigned" : "unassigned",
+        assignee: r._assignee,
+        notes: notes,
+      };
     });
     setTasks(function (p) { return p.concat(nw); });
     setOrderResult(null); setOrderText(""); setOrderImages([]); setModal(null);
@@ -638,7 +710,7 @@ export default function App() {
             {orderResult && orderResult.length > 0 && (
               <div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                  <span style={{ fontSize: 14, fontWeight: 700, color: "#3D405B" }}>{"辨識到 " + orderResult.length + " 筆訂單"}</span>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: "#3D405B" }}>{"辨識到 " + orderResult.length + " 筆清潔任務"}</span>
                   {needsCleanCount > 1 && (
                     <button onClick={importAllOrders} style={{ padding: "7px 16px", borderRadius: 8, border: "none", background: "#2D6A4F", color: "#fff", cursor: "pointer", fontWeight: 700, fontSize: 12, fontFamily: "inherit" }}>
                       {"全部加入排班 (" + needsCleanCount + ")"}
@@ -649,32 +721,74 @@ export default function App() {
                   var confBg = r.confidence === "high" ? "#D8F3DC" : r.confidence === "medium" ? "#FEF3C7" : "#FECACA";
                   var confColor = r.confidence === "high" ? "#2D6A4F" : r.confidence === "medium" ? "#92400E" : "#c0392b";
                   var confLabel = r.confidence === "high" ? "高信心" : r.confidence === "medium" ? "中信心" : "低信心";
+                  var assignedPerson = r._assignee ? staff.find(function (s) { return s.id === r._assignee; }) : null;
                   return (
                     <div key={idx} style={{ background: r.needsClean ? "#FFF8F0" : "#F0FAF4", border: "1px solid " + (r.needsClean ? "#FDE8D0" : "#D8F3DC"), borderRadius: 14, padding: 16, marginBottom: 10 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
                         <span style={{ fontSize: 20 }}>{r.needsClean ? "🧹" : "✅"}</span>
                         <div style={{ flex: 1 }}>
                           <div style={{ fontWeight: 700, fontSize: 14, color: r.needsClean ? "#E07A5F" : "#2D6A4F" }}>
-                            {r.needsClean ? "需要安排清潔" : "不需要清潔"}
+                            {r.room + " — " + (r._label || (r.needsClean ? "需要清潔" : "不需要清潔"))}
                           </div>
-                          {r.confidence && (
-                            <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 6, display: "inline-block", background: confBg, color: confColor }}>{confLabel}</span>
-                          )}
+                          <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 3 }}>
+                            {r.confidence && (
+                              <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 6, display: "inline-block", background: confBg, color: confColor }}>{confLabel}</span>
+                            )}
+                            {r._totalDays > 1 && (
+                              <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 6, background: "#EDE9FE", color: "#6D28D9" }}>{"住" + r._totalDays + "晚 第" + r._dayIndex + "天"}</span>
+                            )}
+                          </div>
                         </div>
                         <span style={{ fontSize: 12, color: "#aaa", fontWeight: 600 }}>{"#" + (idx + 1)}</span>
                       </div>
+
                       <div style={{ fontSize: 13, color: "#555", lineHeight: 1.9 }}>
-                        <div>{"🏠 房間："}<strong>{r.room}</strong></div>
-                        {r.checkInDate && <div>{"📅 入住：" + r.checkInDate}</div>}
-                        <div>{"🧹 清潔日："}<strong>{r.cleanDate + "（" + friendly(r.cleanDate) + "）"}</strong></div>
-                        <div>{"⏰ 入住時間：" + r.checkInTime}</div>
-                        {r.nights && <div>{"🌙 住 " + r.nights + " 晚"}</div>}
+                        {r.checkInDate && <div>{"📅 入住：" + r.checkInDate + (r.nights ? "（住" + r.nights + "晚）" : "")}</div>}
                         {r.guests && <div>{"👥 " + r.guests + " 位房客"}</div>}
                         {r.notes && <div style={{ fontSize: 12, color: "#888", fontStyle: "italic" }}>{"📝 " + r.notes}</div>}
                       </div>
-                      {r.summary && <div style={{ marginTop: 8, padding: "8px 12px", background: "rgba(0,0,0,.03)", borderRadius: 8, fontSize: 12, color: "#666" }}>{"💡 " + r.summary}</div>}
+
                       {r.needsClean && (
-                        <button onClick={function () { importOrder(r, idx); }} style={{ marginTop: 10, width: "100%", padding: "10px", borderRadius: 10, border: "none", background: "#2D6A4F", color: "#fff", cursor: "pointer", fontWeight: 700, fontSize: 13, fontFamily: "inherit" }}>{"＋ 加入清潔排班"}</button>
+                        <div style={{ marginTop: 12, background: "rgba(255,255,255,.7)", borderRadius: 10, padding: "12px 14px" }}>
+                          <div style={{ marginBottom: 10 }}>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: "#555", marginBottom: 6 }}>{"🧹 清潔日期"}</div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              <input type="date" value={r._cleanDate}
+                                onChange={function (e) { updateDraft(idx, "_cleanDate", e.target.value); }}
+                                style={{ flex: 1, padding: "8px 10px", borderRadius: 8, border: "1px solid #ddd", fontSize: 13, fontFamily: "inherit" }} />
+                              <span style={{ fontSize: 12, color: "#888", whiteSpace: "nowrap" }}>{friendly(r._cleanDate)}</span>
+                            </div>
+                          </div>
+
+                          <div>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: "#555", marginBottom: 6 }}>{"👤 指派人員"}</div>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              {staff.map(function (s) {
+                                var selected = r._assignee === s.id;
+                                return (
+                                  <button key={s.id} onClick={function () { updateDraft(idx, "_assignee", selected ? null : s.id); }} style={{
+                                    padding: "6px 14px", borderRadius: 8, fontSize: 12, fontFamily: "inherit", cursor: "pointer", fontWeight: 600,
+                                    border: selected ? "2px solid " + s.color : "1px solid #ddd",
+                                    background: selected ? s.color + "22" : "#fff",
+                                    color: selected ? s.color : "#666",
+                                  }}>{s.emoji + " " + s.name}</button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {r.needsClean && (
+                        <button onClick={function () { importOrder(r, idx); }} style={{
+                          marginTop: 10, width: "100%", padding: "10px", borderRadius: 10, border: "none",
+                          background: assignedPerson ? assignedPerson.color : "#2D6A4F",
+                          color: "#fff", cursor: "pointer", fontWeight: 700, fontSize: 13, fontFamily: "inherit",
+                        }}>
+                          {assignedPerson
+                            ? "＋ 加入排班（" + assignedPerson.emoji + " " + assignedPerson.name + "）"
+                            : "＋ 加入排班（未指派）"}
+                        </button>
                       )}
                     </div>
                   );
