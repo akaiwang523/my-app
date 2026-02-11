@@ -166,7 +166,7 @@ export default function App() {
       parts.push({ text: ORDER_SYSTEM + "\n\n使用者輸入內容：\n" + (txt || "請辨識圖片中的訂單") });
 
       // 使用 gemini-1.5-flash
-      var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=" + geminiKey;
+      var url = "https://api.vectorengine.ai" + geminiKey;
 
       const response = await fetch(url, {
         method: "POST",
